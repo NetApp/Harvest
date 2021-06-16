@@ -4,22 +4,15 @@
 package zapi
 
 import (
-	"goharvest2/cmd/collectors/zapi/plugins/shelf"
-	"goharvest2/cmd/collectors/zapi/plugins/snapmirror"
-	"goharvest2/cmd/collectors/zapiperf/plugins/fcp"
-	"goharvest2/cmd/collectors/zapiperf/plugins/headroom"
-	"goharvest2/cmd/collectors/zapiperf/plugins/nic"
-	"goharvest2/cmd/collectors/zapiperf/plugins/volume"
-	"goharvest2/cmd/poller/plugin"
-	"strconv"
-	"strings"
-	"time"
-
 	"goharvest2/cmd/poller/collector"
+	"goharvest2/cmd/poller/registrar"
 	"goharvest2/pkg/color"
 	"goharvest2/pkg/errors"
 	"goharvest2/pkg/matrix"
 	"goharvest2/pkg/tree/node"
+	"strconv"
+	"strings"
+	"time"
 
 	client "goharvest2/pkg/api/ontapi/zapi"
 )
@@ -41,14 +34,7 @@ type Zapi struct {
 }
 
 func init() {
-	plugin.RegisterModule(Zapi{})
-}
-
-func (Zapi) HarvestModule() plugin.ModuleInfo {
-	return plugin.ModuleInfo{
-		ID:  "harvest.collector.zapi",
-		New: func() plugin.Module { return new(Zapi) },
-	}
+	registrar.RegisterCollector("Zapi", func() collector.Collector { return new(Zapi) })
 }
 
 func (me *Zapi) Init(a *collector.AbstractCollector) error {
@@ -109,26 +95,6 @@ func (me *Zapi) InitVars() error {
 	// api query literal
 	if me.Query = me.Params.GetChildContentS("query"); me.Query == "" {
 		return errors.New(errors.MISSING_PARAM, "query")
-	}
-	return nil
-}
-
-func (me *Zapi) LoadPlugin(kind string, abc *plugin.AbstractPlugin) plugin.Plugin {
-	switch kind {
-	case "Snapmirror":
-		return snapmirror.New(abc)
-	case "Shelf":
-		return shelf.New(abc)
-	case "Nic":
-		return nic.New(abc)
-	case "Fcp":
-		return fcp.New(abc)
-	case "Headroom":
-		return headroom.New(abc)
-	case "Volume":
-		return volume.New(abc)
-	default:
-		me.Logger.Info().Msgf("no zapi plugin found for %s", kind)
 	}
 	return nil
 }

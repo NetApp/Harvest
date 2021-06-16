@@ -6,6 +6,7 @@ package aggregator
 
 import (
 	"goharvest2/cmd/poller/plugin"
+	"goharvest2/cmd/poller/registrar"
 	"goharvest2/pkg/errors"
 	"goharvest2/pkg/matrix"
 	"regexp"
@@ -17,9 +18,13 @@ type Aggregator struct {
 	rules []*rule
 }
 
-func New(p *plugin.AbstractPlugin) plugin.Plugin {
-	return &Aggregator{AbstractPlugin: p}
+func init() {
+	registrar.RegisterPlugin("Aggregator", func() plugin.Plugin { return new(Aggregator) })
 }
+
+var (
+	_ plugin.Plugin = (*Aggregator)(nil)
+)
 
 type rule struct {
 	label         string
@@ -32,9 +37,11 @@ type rule struct {
 	counts        map[string]map[string]int
 }
 
-func (me *Aggregator) Init() error {
+func (me *Aggregator) Init(abc *plugin.AbstractPlugin) error {
 
-	if err := me.AbstractPlugin.Init(); err != nil {
+	me.AbstractPlugin = abc
+
+	if err := me.InitAbc(); err != nil {
 		return err
 	}
 

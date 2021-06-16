@@ -9,6 +9,7 @@ import (
 )
 
 const (
+	MISSING_MODULE   = "missing module"
 	MISSING_PARAM    = "missing parameter"
 	INVALID_PARAM    = "invalid parameter"
 	ERR_CONNECTION   = "connection error"

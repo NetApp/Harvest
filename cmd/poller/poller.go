@@ -26,16 +26,13 @@ package main
 import (
 	"fmt"
 	"github.com/spf13/cobra"
-	_ "goharvest2/cmd/collectors/unix"
-	_ "goharvest2/cmd/collectors/zapi/collector"
-	_ "goharvest2/cmd/collectors/zapiperf"
-	"goharvest2/cmd/exporters/influxdb"
-	"goharvest2/cmd/exporters/prometheus"
 	"goharvest2/cmd/harvest/version"
 	"goharvest2/cmd/poller/collector"
 	"goharvest2/cmd/poller/exporter"
+	_ "goharvest2/cmd/poller/modules"
 	"goharvest2/cmd/poller/options"
 	"goharvest2/cmd/poller/plugin"
+	"goharvest2/cmd/poller/registrar"
 	"goharvest2/cmd/poller/schedule"
 	"goharvest2/pkg/conf"
 	"goharvest2/pkg/errors"
@@ -489,18 +486,21 @@ func (me *Poller) loadCollector(class, object string) error {
 
 	// if object is defined, we only initialize 1 sub-collector / object
 	if object != "" {
+		logger.Debug().Msgf("initing singleton collector [%s] for object (%s)", class, object)
 		col, err = me.newCollector(class, object, template)
-		if col != nil {
-			if err != nil {
-				logger.Error().Msgf("init collector (%s:%s): %v", class, object, err)
-			} else {
-				collectors = append(collectors, col)
-				logger.Debug().Msgf("initialized collector (%s:%s)", class, object)
-			}
+		if err != nil {
+			logger.Error().Msgf("load collector: %v", err)
+		} else if col == nil {
+			panic("collector module returned nil")
+		} else {
+			collectors = append(collectors, col)
+			logger.Debug().Msgf("initialized collector (%s:%s)", class, object)
 		}
 		// if template has list of objects, initialize 1 subcollector for each
 	} else if objects := template.GetChildS("objects"); objects != nil {
 		for _, object := range objects.GetChildren() {
+
+			logger.Debug().Msgf("initing sub-collector [%s] for object (%s)", class, object)
 
 			ok := true
 
@@ -542,7 +542,6 @@ func (me *Poller) loadCollector(class, object string) error {
 
 	me.collectors = append(me.collectors, collectors...)
 	logger.Debug().Msgf("initialized (%s) with %d objects", class, len(collectors))
-	// link each collector with requested exporter & update metadata
 	for _, col = range collectors {
 		if col == nil {
 			logger.Warn().Msg("ignoring nil collector")
@@ -551,6 +550,7 @@ func (me *Poller) loadCollector(class, object string) error {
 		name := col.GetName()
 		obj := col.GetObject()
 
+		// link collector to requested exporter
 		for _, expName := range col.WantedExporters(me.options.Config) {
 			logger.Trace().Msgf("expName %s", expName)
 			if exp := me.loadExporter(expName); exp != nil {
@@ -560,9 +560,40 @@ func (me *Poller) loadCollector(class, object string) error {
 				logger.Warn().Msgf("exporter (%s) requested by (%s:%s) not available", expName, name, obj)
 			}
 		}
+		// load requested plugins
+		if plugins := col.WantedPlugins(); plugins != nil {
+			var (
+				p   plugin.Plugin
+				abc *plugin.AbstractPlugin
+			)
+			for _, x := range plugins.GetChildren() {
 
-		// update metadata
+				pluginName := x.GetNameS()
+				if pluginName == "" {
+					pluginName = x.GetContentS() // some plugins are defined as list elements others as dicts
+					x.SetNameS(pluginName)
+				}
+				logger.Trace().Msgf("loading plugin [%s]", pluginName)
 
+				abc = plugin.New(col.GetName(), col.GetOptions(), x, col.GetParams())
+
+				foo := registrar.GetPlugin(pluginName)
+				if foo == nil {
+					return errors.New(errors.MISSING_MODULE, name)
+				}
+
+				p = foo()
+
+				if err := p.Init(abc); err != nil {
+					logger.Error().Stack().Err(err).Msgf("init plugin [%s]:", name)
+					return err
+				}
+				col.LinkPlugin(p)
+				logger.Debug().Msgf("linked (%s:%s) to plugin (%s)", name, obj, pluginName)
+			}
+		}
+
+		// update collector metadata
 		if instance, err := me.metadata.NewInstance(name + "." + obj); err != nil {
 			return err
 		} else {
@@ -576,21 +607,21 @@ func (me *Poller) loadCollector(class, object string) error {
 }
 
 func (me *Poller) newCollector(class string, object string, template *node.Node) (collector.Collector, error) {
-	name := "harvest.collector." + strings.ToLower(class)
-	mod, err := plugin.GetModule(name)
-	if err != nil {
-		logger.Error().Msgf("error getting module %s", name)
-		return nil, err
+	//name := "harvest.collector." + strings.ToLower(class)
+	foo := registrar.GetCollector(class)
+	if foo == nil {
+		//logger.Error().Msgf("error getting module %s", class)
+		return nil, errors.New(errors.MISSING_MODULE, "collector "+class)
 	}
-	inst := mod.New()
-	col, ok := inst.(collector.Collector)
-	if !ok {
-		logger.Error().Msgf("collector '%s' is not a Collector", name)
-		return nil, errors.New(errors.ERR_NO_COLLECTOR, "no collectors")
-	}
+	//inst := mod.New()
+	//col, ok := inst.(collector.Collector)
+	//if !ok {
+	//	logger.Error().Msgf("collector '%s' is not a Collector", name)
+	//	return nil, errors.New(errors.ERR_NO_COLLECTOR, "no collectors")
+	//}
+	col := foo()
 	delegate := collector.New(class, object, me.options, template.Copy())
-	err = col.Init(delegate)
-	return col, err
+	return col, col.Init(delegate)
 }
 
 // returns exporter that matches to name, if exporter is not loaded
@@ -620,16 +651,15 @@ func (me *Poller) loadExporter(name string) exporter.Exporter {
 	}
 
 	absExp := exporter.New(class, name, me.options, params)
-	switch class {
-	case "Prometheus":
-		exp = prometheus.New(absExp)
-	case "InfluxDB":
-		exp = influxdb.New(absExp)
-	default:
+	foo := registrar.GetExporter(class)
+
+	if foo == nil {
 		logger.Error().Msgf("no exporter of name:type %s:%s", name, class)
 		return nil
 	}
-	if err = exp.Init(); err != nil {
+
+	exp = foo()
+	if err = exp.Init(absExp); err != nil {
 		logger.Error().Msgf("init exporter (%s): %v", name, err)
 		return nil
 	}
